@@ -14,8 +14,6 @@
 https://github.com/Script-Hub-Org/Script-Hub
 ***************************/
 
-const { CLIENT_RENEG_WINDOW } = require('tls')
-
 const script_start = Date.now()
 const JS_NAME = 'Script Hub: 重写转换'
 const $ = new Env(JS_NAME)
@@ -54,11 +52,18 @@ const evJsmodi = queryObject.evalScriptmodi
 const evUrlori = queryObject.evalUrlori
 const evUrlmodi = queryObject.evalUrlmodi
 
+const prepend = queryObject.prepend
+const scEvJsori = queryObject.evJsori
+const scEvJsmodi = queryObject.evJsmodi
+const scEvUrlori = queryObject.evUrlori
+const scEvUrlmodi = queryObject.evUrlmodi
+
 let noNtf = queryObject.noNtf ? istrue(queryObject.noNtf) : false //默认开启通知
 
 let localsetNtf = $.lodash_get(arg, 'Notify') || $.getval('ScriptHub通知') || ''
 noNtf = localsetNtf == '开启通知' ? false : localsetNtf == '关闭通知' ? true : noNtf
 
+let jqEnabled = istrue(queryObject.jqEnabled)
 let openMsgHtml = istrue(queryObject.openMsgHtml)
 
 noNtf = openMsgHtml ? true : noNtf
@@ -99,7 +104,11 @@ let sufkeepHeader = keepHeader == true ? '&keepHeader=true' : '' //用于保留h
 let sufjsDelivr = jsDelivr == true ? '&jsDelivr=true' : '' //用于开启jsDeliver的后缀
 
 //用于自定义发送请求的请求头
-const reqHeaders = { headers: {} }
+const reqHeaders = {
+  headers: {
+    'User-Agent': 'script-hub/1.0.0',
+  },
+}
 
 if (queryObject.headers) {
   decodeURIComponent(queryObject.headers)
@@ -323,7 +332,8 @@ if (binaryInfo != null && binaryInfo.length > 0) {
 
   if (bodyRewrite) {
     for await (let [y, x] of bodyRewrite.match(/[^\r\n]+/g).entries()) {
-      const [_, type, regex, value] = x.match(/^(http-request|http-response)\s+?(.*?)\s+?(.*?)$/)
+      if (/^(#|;|\/\/)\s*/.test(x)) continue
+      const [_, type, regex, value] = x.match(/^((?:http-request|http-response)(?:-jq)?)\s+?(.*?)\s+?(.*?)$/)
       rwbodyBox.push({ type, regex, value })
     }
   }
@@ -340,7 +350,9 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       .replace(/^#!PROFILE-VERSION-REQUIRED\s+[0-9]+\s+/i, '')
       .replace(/^(#)?host(-suffix|-keyword|-wildcard)?\s*,\s*/i, '$1DOMAIN$2,')
       .replace(/^(#)?ip6-cidr\s*,\s*/i, '$1IP-CIDR6,')
-
+    if (!/^(#|\/\/|;)/.test(x)) {
+      x = x.replace(/\s+?(?:#|\/\/|;).*?$/, '')
+    }
     //去掉注释
     if (Pin0 != null) {
       for (let i = 0; i < Pin0.length; i++) {
@@ -374,6 +386,7 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       x = ''
     }
 
+    let flags = {}
     //sni嗅探
     if (sni != null) {
       for (let i = 0; i < sni.length; i++) {
@@ -384,10 +397,12 @@ if (binaryInfo != null && binaryInfo.length > 0) {
             x = x + ',extended-matching'
             break
           } else if (/^(AND|OR|NOT)\s*?,/i.test(x)) {
-            x = x.replace(
-              /\(\s*?((DOMAIN(-\w+)?|RULE-SET|URL-REGEX)\s*?,\s*?((?!,\s*?extended-matching\s*?(,|\))).)+?\s*?)\)/g,
-              '($1,extended-matching)'
-            )
+            // x = x.replace(
+            //   /(\(\s*?(?:DOMAIN(?:-\w+)?|RULE-SET|URL-REGEX)\s*?,\s*?(?:(?!,\s*?extended-matching\s*?(?:,|\))).)+?\s*?)((\)\s*?)+?,)/g,
+            //   '$1,extended-matching$2'
+            // )
+            // x = modifyRule(x, 'surge', { extendedMatching: true })
+            flags.extendedMatching = true
             break
           }
         }
@@ -399,19 +414,12 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       for (let i = 0; i < pm.length; i++) {
         const elem = pm[i].trim()
         // 加入对逻辑规则的判断
-        const _rulePandV = x
-          .replace(/^#/, '')
-          .replace(ruletype, '') // 这个此时还没有 不过不重要
-          .replace(/\s*,\s*no-resolve/, '')
-          .replace(/\s*,\s*extended-matching/, '')
-          .replace(/\s*,\s*pre-matching/, '')
-          .replace(/^\s*,\s*/, '')
-        const _rulepolicy = getPolicy(_rulePandV)
+        const _rulepolicy = x.match(/,\s*([^,]+?)\s*(\s*,\s*(pre-matching|no-resolve|extended-matching)\s*)*?\s*$/)?.[1]
         if (
           isSurgeiOS &&
           x.indexOf(elem) != -1 &&
           !/,\s*pre-matching/i.test(x) &&
-          /^REJECT(-\w+)?/i.test(_rulepolicy)
+          /^REJECT(-[A-Z]+)*$/i.test(_rulepolicy)
         ) {
           if (
             /^(DOMAIN|DOMAIN|DOMAIN-SUFFIX|DOMAIN-KEYWORD|DOMAIN-SET|DOMAIN-WILDCARD|IP-CIDR|IP-CIDR6|GEOIP|IP-ASN|SUBNET|DEST-PORT|SRC-PORT|SRC-IP|RULE-SET)\s*?,/i.test(
@@ -421,22 +429,24 @@ if (binaryInfo != null && binaryInfo.length > 0) {
             x = x + ',pre-matching'
             break
           } else if (/^(AND|OR|NOT)\s*?,/i.test(x)) {
-            const pre_matching_regex = /\(\s*?(((?!(AND|NOT|OR))(\w|-))+?)\s*?,\s*?.+?\s*?\)/g
-            let not_matched = false
-            while ((matched = pre_matching_regex.exec(x))) {
-              if (
-                !/^(DOMAIN|DOMAIN|DOMAIN-SUFFIX|DOMAIN-KEYWORD|DOMAIN-SET|DOMAIN-WILDCARD|IP-CIDR|IP-CIDR6|GEOIP|IP-ASN|SUBNET|DEST-PORT|SRC-PORT|SRC-IP|RULE-SET)$/i.test(
-                  matched?.[1]
-                )
-              ) {
-                not_matched = true
-                break
-              }
-            }
-            if (!not_matched) {
-              x = x + ',pre-matching'
-              break
-            }
+            // const pre_matching_regex = /\(\s*?(((?!(AND|NOT|OR))(\w|-))+?)\s*?,\s*?.+?\s*?((\)\s*?)+?,)/g
+            // let not_matched = false
+            // while ((matched = pre_matching_regex.exec(x))) {
+            //   if (
+            //     !/^(DOMAIN|DOMAIN|DOMAIN-SUFFIX|DOMAIN-KEYWORD|DOMAIN-SET|DOMAIN-WILDCARD|IP-CIDR|IP-CIDR6|GEOIP|IP-ASN|SUBNET|DEST-PORT|SRC-PORT|SRC-IP|RULE-SET)$/i.test(
+            //       matched?.[1]
+            //     )
+            //   ) {
+            //     not_matched = true
+            //     break
+            //   }
+            // }
+            // if (!not_matched) {
+            //   x = x + ',pre-matching'
+            //   break
+            // }
+            // x = modifyRule(x, 'surge', { preMatching: true })
+            flags.preMatching = true
           }
         }
       } //循环结束
@@ -446,12 +456,18 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       if (/^(IP(-\w+)?|RULE-SET|GEOIP)/i.test(x) && !/,\s*?no-resolve/i.test(x)) {
         x = x + ',no-resolve'
       } else if (/^(AND|OR|NOT)\s*?,/i.test(x)) {
-        x = x.replace(
-          /\(\s*?((IP(-\w+)?|RULE-SET|GEOIP)\s*?,\s*?((?!,\s*?no-resolve\s*?(,|\))).)+?\s*?)\)/g,
-          '($1,no-resolve)'
-        )
+        // x = x.replace(
+        //   /(\(\s*?(?:IP(?:-\w+)?|RULE-SET|GEOIP)\s*?,\s*?(?:(?!,\s*?no-resolve\s*?(?:,|\))).)+?\s*?)((\)\s*?)+?,)/g,
+        //   '$1,no-resolve$2'
+        // )
+        // x = modifyRule(x, 'surge', { noResolve: true })
+        flags.noResolve = true
       }
     } //增加ip规则不解析域名结束
+
+    if (/^(AND|OR|NOT)\s*?,/i.test(x)) {
+      x = modifyRule(x, 'surge', flags)
+    }
 
     if (jsConverter != null) {
       jscStatus = isJsCon(x, jsConverter)
@@ -476,6 +492,21 @@ if (binaryInfo != null && binaryInfo.length > 0) {
 
     if (compatibilityOnly == true && (jscStatus == true || jsc2Status == true)) {
       jsSuf = jsSuf + '&compatibilityOnly=true'
+    }
+    if (prepend && (jscStatus == true || jsc2Status == true)) {
+      jsSuf = jsSuf + `&prepend=${encodeURIComponent(prepend)}`
+    }
+    if (scEvJsori && (jscStatus == true || jsc2Status == true)) {
+      jsSuf = jsSuf + `&evalScriptori=${encodeURIComponent(scEvJsori)}`
+    }
+    if (scEvJsmodi && (jscStatus == true || jsc2Status == true)) {
+      jsSuf = jsSuf + `&evalScriptmodi=${encodeURIComponent(scEvJsmodi)}`
+    }
+    if (scEvUrlori && (jscStatus == true || jsc2Status == true)) {
+      jsSuf = jsSuf + `&evalUrlori=${encodeURIComponent(scEvUrlori)}`
+    }
+    if (scEvUrlmodi && (jscStatus == true || jsc2Status == true)) {
+      jsSuf = jsSuf + `&evalUrlmodi=${encodeURIComponent(scEvUrlmodi)}`
     }
 
     //模块信息
@@ -518,27 +549,27 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       rw_redirect(x, mark)
     }
 
-    // Loon body rewrite 解析 不用这个 因为需要合并到一个脚本中对一个请求/响应进行多个操作
-    // if (/\s((request|response)-body-replace-regex)\s/.test(x)) {
-    //   let [_, regex, __, type, suffix] = x.match(/^(.*?)\s+?((request|response)-body-replace-regex)\s+?(.*?)\s*$/)
-    //   type = `http-${type}`
-    //   const suffixArray = suffix.split(/\s+/)
-    //   const newSuffixArray = []
-    //   for (let index = 0; index < suffixArray.length; index += 2) {
-    //     const key = suffixArray[index]
-    //     const value = suffixArray[index + 1]
-
-    //     if (value != null) {
-    //       newSuffixArray.push(
-    //         `${/\\x20/.test(key) ? `"${key.replace(/\\x20/g, ' ')}"` : key} ${
-    //           /\\x20/.test(value) ? `"${value.replace(/\\x20/g, ' ')}"` : value
-    //         }`
-    //       )
-    //     }
-    //   }
-
-    //   rwbodyBox.push({ type, regex, value: newSuffixArray.join(' ') })
-    // }
+    if (/\s((request|response)-body-json-jq)\s/.test(x)) {
+      let [_, regex, type, value] = x.match(/^(.*?)\s+?(?:(request|response)-body-json-jq)\s+?(.*?)\s*$/)
+      if (jqEnabled && isSurgeiOS) {
+        const jqPath = value.match(/jq-path="(.+?)"/)?.[1]
+        if (jqPath) {
+          if (/^https?:\/\//.test(jqPath)) {
+            value = `'${(await http(jqPath, reqHeaders)).body.replace(/^\s*#.*$/gm, '').replace(/$\r?\n/gm, ' ')}'`
+          } else {
+            value = undefined
+            const e = `暂不支持本地 JQ 文件:\n${x}`
+            console.log(e)
+            shNotify(e)
+          }
+        }
+        if (value) {
+          rwbodyBox.push({ type: `http-${type}-jq`, regex, value })
+        }
+      } else if (isLooniOS) {
+        URLRewrite.push(x)
+      }
+    }
 
     if (/\s((request|response)-body-(json-(add|del|replace)|replace-regex))\s/.test(x)) {
       let [_, regex, __, httpType, action, ___, suffix] = x.match(
@@ -548,43 +579,80 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       let newSuffixArray = []
       if (action === 'json-del') {
         if (suffix) {
-          newSuffixArray = suffixArray.map(item => (/\\x20/.test(item) ? `${item.replace(/\\x20/g, ' ')}` : item))
+          newSuffixArray = suffixArray.map(item => {
+            return parseLoonKey(item)
+          })
         }
       } else {
         for (let index = 0; index < suffixArray.length; index += 2) {
           const key = suffixArray[index]
-          const value = suffixArray[index + 1]
+          let value = suffixArray[index + 1]
 
           if (value != null) {
             newSuffixArray.push([
-              /\\x20/.test(key) ? `${key.replace(/\\x20/g, ' ')}` : key,
-              /\\x20/.test(value) ? `${value.replace(/\\x20/g, ' ')}` : value,
+              parseLoonKey(key),
+              ['json-add', 'json-replace'].includes(action) ? parseLoonValue(value) : parseLoonKey(value),
             ])
           }
         }
       }
       const jsurl = 'https://raw.githubusercontent.com/Script-Hub-Org/Script-Hub/main/scripts/body-rewrite.js'
-      const jstype = `http-${httpType}`
+      let jstype = `http-${httpType}`
       const jsptn = regex
       let args = [[action, newSuffixArray]]
 
-      const index = jsBox.findIndex(i => i.jsurl === jsurl && i.jstype === jstype && i.jsptn === jsptn)
-      if (index === -1) {
-        jsBox.push({
-          jsname: `body_rewrite_${y}`,
-          jstype,
-          jsptn,
-          jsurl,
-          rebody: true,
-          size: -1,
-          timeout: '30',
-          jsarg: encodeURIComponent(JSON.stringify(args)),
-          ori: x,
-          num: y,
-        })
+      if (jqEnabled && isSurgeiOS) {
+        if (action === 'json-add') {
+          newSuffixArray.forEach(item => {
+            const paths = parseJsonPath(item[0])
+            rwbodyBox.push({
+              type: `${jstype}-jq`,
+              regex: jsptn,
+              value: `'setpath(${JSON.stringify(paths)}; ${JSON.stringify(item[1])})'`,
+            })
+          })
+        } else if (action === 'json-del') {
+          newSuffixArray.forEach(item => {
+            const paths = parseJsonPath(item)
+            rwbodyBox.push({ type: `${jstype}-jq`, regex: jsptn, value: `'delpaths([${JSON.stringify(paths)}])'` })
+          })
+        } else if (action === 'json-replace') {
+          newSuffixArray.forEach(item => {
+            const paths = parseJsonPath(item[0])
+            const parant = [...paths]
+            const last = parant.pop()
+            rwbodyBox.push({
+              type: `${jstype}-jq`,
+              regex: jsptn,
+              value: `'if (getpath(${JSON.stringify(parant)}) | has(${
+                /^\d+$/.test(last) ? last : `"${last}"`
+              })) then (setpath(${JSON.stringify(paths)}; ${JSON.stringify(item[1])})) else . end'`,
+            })
+          })
+        } else {
+          newSuffixArray = newSuffixArray.map(item => item.join(' '))
+          rwbodyBox.push({ type: jstype, regex: jsptn, value: newSuffixArray.join(' ') })
+        }
       } else {
-        let jsargs = JSON.parse(decodeURIComponent(jsBox[index].jsarg))
-        jsBox[index].jsarg = encodeURIComponent(JSON.stringify([...jsargs, args[0]]))
+        // console.log(JSON.stringify(args, null, 2))
+        const index = jsBox.findIndex(i => i.jsurl === jsurl && i.jstype === jstype && i.jsptn === jsptn)
+        if (index === -1) {
+          jsBox.push({
+            jsname: `body_rewrite_${y}`,
+            jstype,
+            jsptn,
+            jsurl,
+            rebody: true,
+            size: -1,
+            timeout: '30',
+            jsarg: encodeURIComponent(JSON.stringify(args)),
+            ori: x,
+            num: y,
+          })
+        } else {
+          let jsargs = JSON.parse(decodeURIComponent(jsBox[index].jsarg))
+          jsBox[index].jsarg = encodeURIComponent(JSON.stringify([...jsargs, args[0]]))
+        }
       }
     }
 
@@ -603,22 +671,16 @@ if (binaryInfo != null && binaryInfo.length > 0) {
         if (/\s(response-)?header-del\s/.test(prefix)) {
           for (let index = 0; index < suffixArray.length; index++) {
             const key = suffixArray[index]
-            newSuffixArray.push(`${/\\x20/.test(key) ? `"${key.replace(/\\x20/g, ' ')}"` : key}`)
+            newSuffixArray.push(`'${parseLoonKey(key)}'`)
           }
         } else if (/\s(response-)?header-replace-regex\s/.test(prefix)) {
           for (let index = 0; index < suffixArray.length; index += 3) {
             const key = suffixArray[index]
-            const value = `${
-              /\\x20/.test(suffixArray[index + 1])
-                ? `"${suffixArray[index + 1].replace(/\\x20/g, ' ')}"`
-                : suffixArray[index + 1]
-            } ${
-              /\\x20/.test(suffixArray[index + 2])
-                ? `"${suffixArray[index + 2].replace(/\\x20/g, ' ')}"`
-                : suffixArray[index + 2]
-            }`
+            const value = `${`'${parseLoonKey(suffixArray[index + 1])}'`} ${`'${parseLoonKey(
+              suffixArray[index + 2]
+            )}'`}`
             if (value != null) {
-              newSuffixArray.push(`${key} ${value}`)
+              newSuffixArray.push(`'${parseLoonKey(key)}' ${value}`)
             }
           }
         } else {
@@ -626,7 +688,7 @@ if (binaryInfo != null && binaryInfo.length > 0) {
             const key = suffixArray[index]
             const value = suffixArray[index + 1]
             if (value != null) {
-              newSuffixArray.push(`${key} ${/\\x20/.test(value) ? `"${value.replace(/\\x20/g, ' ')}"` : value}`)
+              newSuffixArray.push(`'${parseLoonKey(key)}' '${parseLoonKey(value)}'`)
             }
           }
         }
@@ -648,7 +710,7 @@ if (binaryInfo != null && binaryInfo.length > 0) {
 
     //rule解析
     if (
-      /^#?(?:domain(?:-suffix|-keyword|-wildcard|-set)?|ip-cidr6?|ip-asn|geoip|rule-set|user-agent|url-regex|(de?st|in|src)-port|src-ip|and|not|or|protocol|subnet)\s*,.+/i.test(
+      /^(#|\/\/|;)?\s*?(domain|domain-suffix|domain-keyword|domain-set|domain-wildcard|ip-cidr|ip-cidr6|geoip|ip-asn|rule-set|url-regex|user-agent|process-name|subnet|dest-port|dst-port|in-port|src-port|src-ip|protocol|network|script|hostname-type|cellular-radio|device-name|domain-regex|geosite|ip-suffix|src-geoip|src-ip-asn|src-ip-cidr|src-ip-suffix|in-type|in-user|in-name|process-path|process-path-regex|process-name-regex|uid|dscp|sub-rule|match|and|or|not)\s*?,.+/i.test(
         x
       )
     ) {
@@ -772,31 +834,33 @@ if (binaryInfo != null && binaryInfo.length > 0) {
           }
         } //for
       }
-
-      jsBox.push({
-        mark,
-        noteK,
-        jsname,
-        img,
-        jstype,
-        jsptn,
-        jsurl,
-        rebody,
-        proto,
-        size,
-        ability,
-        updatetime,
-        timeout,
-        jsarg,
-        cronexp,
-        wakesys,
-        tilesicon,
-        tilescolor,
-        eventname,
-        engine,
-        ori: x,
-        num: y,
-      })
+      // 注释不加
+      if (!/^(#|;|\/\/)\s*/.test(x)) {
+        jsBox.push({
+          mark,
+          noteK,
+          jsname,
+          img,
+          jstype,
+          jsptn,
+          jsurl,
+          rebody,
+          proto,
+          size,
+          ability,
+          updatetime,
+          timeout,
+          jsarg,
+          cronexp,
+          wakesys,
+          tilesicon,
+          tilescolor,
+          eventname,
+          engine,
+          ori: x,
+          num: y,
+        })
+      }
     } //脚本解析结束
 
     //qx脚本解析
@@ -1095,6 +1159,9 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       !isStashiOS
     ) {
       rulevalue = /,/.test(rulevalue) && !/[()]/.test(rulevalue) ? '"' + rulevalue + '"' : rulevalue
+      if (/^(url-regex|user-agent)$/i.test(ruletype) && !/^['"].*['"]$/.test(rulevalue)) {
+        rulevalue = `"${rulevalue}"`
+      }
       rules.push(mark + noteK + ruletype + ',' + rulevalue + ',' + rulepolicy + rulenore + rulesni + rulepm)
     } else if (/^(?:and|or|not)$/i.test(ruletype) && !isStashiOS) {
       rules.push(ori)
@@ -1102,7 +1169,10 @@ if (binaryInfo != null && binaryInfo.length > 0) {
       rules.push(mark + noteK2 + '- ' + ruletype + ',' + rulevalue + ',' + rulepolicy + rulenore)
     } else if (/src-port/i.test(ruletype) && (isSurgeiOS || isLooniOS)) {
       rules.push(mark + noteK + ruletype + ',' + rulevalue + ',' + rulepolicy + rulepm)
-    } else if (/src-ip|subnet/i.test(ruletype) && isSurgeiOS) {
+    } else if (
+      /src-ip|subnet|protocol|network|script|hostname-type|cellular-radio|device-name/i.test(ruletype) &&
+      isSurgeiOS
+    ) {
       rules.push(mark + noteK + ruletype + ',' + rulevalue + ',' + rulepolicy + rulepm)
     } else if (/url-regex/i.test(ruletype) && isStashiOS && /reject/i.test(rulepolicy)) {
       let Urx2Reject
@@ -1264,7 +1334,7 @@ if (binaryInfo != null && binaryInfo.length > 0) {
         MapLocal.push(mark + noteK + mockptn + mocktype + mockurl + mockstatus + mockheader)
         break
       case 'loon-plugin':
-        MapLocal.push(
+        URLRewrite.push(
           mark +
             noteK +
             mockptn +
@@ -1656,7 +1726,24 @@ ${MITM}
       HeaderRewrite = (HeaderRewrite[0] || '') && `  header-rewrite:\n${HeaderRewrite.join('\n')}`
       script = (script[0] || '') && `  script:\n${script.join('\n\n')}`
 
+      let StashBodyRewrite = []
+      for (let i = 0; i < rwbodyBox.length; i++) {
+        const { type, regex, value } = rwbodyBox[i]
+        StashBodyRewrite.push(
+          `    - ${regex} ${type.replace(/^http-/, '').replace(/^(request|response)$/, '$1-replace-regex')} ${value
+            .replace(/^"(.+)"$/, '$1')
+            .replace(/^'(.+)'$/, '$1')
+            .split(' ')
+            .map(i => i.replace(/^"(.+)"$/, '$1').replace(/^'(.+)'$/, '$1'))
+            .join(' ')}`
+        )
+      }
+      if (StashBodyRewrite.length > 0) {
+        StashBodyRewrite = `  body-rewrite:\n${StashBodyRewrite.join('\n')}`
+      }
+
       if (
+        StashBodyRewrite.length > 0 ||
         URLRewrite.length > 0 ||
         script.length > 0 ||
         HeaderRewrite.length > 0 ||
@@ -1672,6 +1759,8 @@ ${MITM}
 ${HeaderRewrite}
 
 ${URLRewrite}
+
+${StashBodyRewrite}
 
 ${script}
 `
@@ -1761,6 +1850,17 @@ function isNoteK(x) {
 //获取当前内容的注释
 function getMark(index, obj) {
   let mark = obj[index - 1]?.match(/^#(?!!)/) ? obj[index - 1] + '\n' : ''
+  // let mark = ''
+
+  // for (let i = index - 1; i >= 0; i--) {
+  //   const line = obj[i].trim()
+
+  //   if (/(^#(?!!)|^\s*$)/.test(line)) {
+  //     mark = line + '\n' + mark
+  //   } else {
+  //     break
+  //   }
+  // }
 
   return mark
 }
@@ -1788,7 +1888,7 @@ function getModInfo(x) {
 
 //获取可莉图标集
 async function getIcon(icon) {
-  let url = 'https://gitlab.com/lodepuly/iconlibrary/-/raw/main/KeLee_icon.json'
+  let url = 'https://raw.githubusercontent.com/luestr/IconResource/main/KeLee_icon.json'
   let kicon = $.getjson('Parser_Kelee_icon')
   if (!kicon) {
     kicon = $.toObj((await http(url)).body)['icons']
@@ -1821,7 +1921,7 @@ function rw_reject(x, mark) {
 function rw_redirect(x, mark) {
   let noteK = isNoteK(x)
   x = x.replace(/\s{2,}/g, ' ')
-  let redirect_type = x.match(/\s302|\s307|\sheader$/)[0].replace(/\s/, '')
+  let redirect_type = x.match(/\s302|\s307|\sheader\s|\sheader$/)[0].replace(/\s/g, '')
   let xArr = x.split(/\s/)
   let rw_typeInNum = xArr.indexOf(redirect_type)
   let rwptn, rwvalue, rwtype
@@ -2020,6 +2120,13 @@ function getMockInfo(x, mark, y) {
         // Surge 的 base64 仅支持内容
         mocktype = 'base64'
       }
+    } else if (/\smock-request-body\s/.test(x)) {
+      if (targetApp === 'surge-module') {
+        const e = `暂不支持 Mock Request Body:\n${x}`
+        console.log(e)
+        shNotify(e)
+        return
+      }
     }
     if (oritype === 'base64') {
       mockbase64 = true
@@ -2028,15 +2135,30 @@ function getMockInfo(x, mark, y) {
   switch (targetApp) {
     case 'surge-module':
       if (mockbase64 && datapath) {
-        const e = '暂不支持远程 base64'
+        const e = `暂不支持远程 base64:\n${x}`
         console.log(e)
         shNotify(e)
+        return
       } else {
         mockBox.push({ mark, noteK, mockptn, mockurl, mockheader, mockstatus, mocktype, ori: x, mocknum: y })
       }
       break
-    case 'shadowrocket-module':
     case 'loon-plugin':
+      mockBox.push({
+        mark,
+        noteK,
+        mockptn,
+        data,
+        datapath,
+        mockurl,
+        mockstatus,
+        mocktype: oritype,
+        mockbase64,
+        ori: x,
+        mocknum: y,
+      })
+      break
+    case 'shadowrocket-module':
     case 'stash-stoverride':
       let mfile = mocktype == 'file' ? mockurl.substring(mockurl.lastIndexOf('/') + 1) : mockurl
       let m2rType
@@ -2048,62 +2170,47 @@ function getMockInfo(x, mark, y) {
       let jsname =
         mocktype == 'file' ? mockurl.substring(mockurl.lastIndexOf('/') + 1, mockurl.lastIndexOf('.')) : 'echoResponse'
       m2rType != null && rwBox.push({ mark, noteK, rwptn: mockptn, rwvalue: '-', rwtype: m2rType })
-      if (targetApp === 'loon-plugin') {
-        mockBox.push({
+
+      let proto
+      if (m2rType == null && mocktype == 'file') {
+        proto = isStashiOS ? 'true' : ''
+        mockheader =
+          mockheader != '' && !/&contentType=/.test(mockheader)
+            ? '&header=' + encodeURIComponent(mockheader)
+            : mockheader != '' && /&contentType=/.test(mockheader)
+            ? mockheader
+            : ''
+        if (keepHeader == false) mockheader = ''
+
+        mockurl = `http://script.hub/convert/_start_/${mockurl}/_end_/${mfile}?type=mock&target-app=${targetApp}${mockheader}${sufkeepHeader}${sufjsDelivr}`
+        jsBox.push({
           mark,
           noteK,
-          mockptn,
-          data,
-          datapath,
-          mockurl,
-          mockstatus,
-          mocktype: oritype,
-          mockbase64,
+          jsname,
+          jstype: 'http-request',
+          jsptn: mockptn,
+          jsurl: mockurl,
+          proto,
+          timeout: '60',
           ori: x,
-          mocknum: y,
+          num: y,
         })
-      } else {
-        let proto
-        if (m2rType == null && mocktype == 'file') {
-          proto = isStashiOS ? 'true' : ''
-          mockheader =
-            mockheader != '' && !/&contentType=/.test(mockheader)
-              ? '&header=' + encodeURIComponent(mockheader)
-              : mockheader != '' && /&contentType=/.test(mockheader)
-              ? mockheader
-              : ''
-          if (keepHeader == false) mockheader = ''
-
-          mockurl = `http://script.hub/convert/_start_/${mockurl}/_end_/${mfile}?type=mock&target-app=${targetApp}${mockheader}${sufkeepHeader}${sufjsDelivr}`
-          jsBox.push({
-            mark,
-            noteK,
-            jsname,
-            jstype: 'http-request',
-            jsptn: mockptn,
-            jsurl: mockurl,
-            proto,
-            timeout: '60',
-            ori: x,
-            num: y,
-          })
-        } else if (m2rType == null && mocktype != 'file') {
-          jsurl = 'https://raw.githubusercontent.com/Script-Hub-Org/Script-Hub/main/scripts/echo-response.js'
-          mockstatus = mockstatus ? '&status-code=' + mockstatus : ''
-          jsarg = `${mocktype}=` + encodeURIComponent(mockurl) + mockstatus
-          jsBox.push({
-            mark,
-            noteK,
-            jsname,
-            jstype: 'http-request',
-            jsptn: mockptn,
-            jsurl,
-            jsarg,
-            timeout: '60',
-            ori: x,
-            num: y,
-          })
-        }
+      } else if (m2rType == null && mocktype != 'file') {
+        jsurl = 'https://raw.githubusercontent.com/Script-Hub-Org/Script-Hub/main/scripts/echo-response.js'
+        mockstatus = mockstatus ? '&status-code=' + mockstatus : ''
+        jsarg = `${mocktype}=` + encodeURIComponent(mockurl) + mockstatus
+        jsBox.push({
+          mark,
+          noteK,
+          jsname,
+          jstype: 'http-request',
+          jsptn: mockptn,
+          jsurl,
+          jsarg,
+          timeout: '60',
+          ori: x,
+          num: y,
+        })
       }
       break
   } //switch
@@ -2210,6 +2317,738 @@ async function http(url, opts = {}) {
     }
     throw new Error(info)
   }
+}
+function parseJsonPath(_path) {
+  const path = _path.trim()
+  const output = []
+  const regex = /\.?([^\.\[\]]+)|\[(['"])(.*?)\2\]|\[(\d+)\]/g
+  let match
+
+  while ((match = regex.exec(path)) !== null) {
+    if (match[1] !== undefined) {
+      // 匹配点符号或初始键
+      output.push(match[1])
+    } else if (match[3] !== undefined) {
+      // 匹配带引号的括号表示法
+      output.push(match[3])
+    } else if (match[4] !== undefined) {
+      // 数组索引，转换为整数
+      output.push(parseInt(match[4], 10))
+    }
+  }
+  return output
+}
+
+// 解析规则
+function parseRule(input) {
+  // 分析器
+  class Tokenizer {
+    constructor(input) {
+      this.input = input
+      this.position = 0
+      this.tokens = []
+    }
+
+    isWhitespace(char) {
+      return /\s/.test(char)
+    }
+
+    isDelimiter(char) {
+      return ['(', ')', ','].includes(char)
+    }
+
+    tokenize() {
+      // console.log('=== 开始词法分析 ===')
+      while (this.position < this.input.length) {
+        let currentChar = this.input[this.position]
+
+        if (this.isWhitespace(currentChar)) {
+          this.position++
+          continue
+        }
+
+        if (currentChar === '(') {
+          this.tokens.push({ type: 'LPAREN', value: '(' })
+          // console.log(`Token: LPAREN '(' at position ${this.position}`)
+          this.position++
+          continue
+        }
+
+        if (currentChar === ')') {
+          this.tokens.push({ type: 'RPAREN', value: ')' })
+          // console.log(`Token: RPAREN ')' at position ${this.position}`)
+          this.position++
+          continue
+        }
+
+        if (currentChar === ',') {
+          this.tokens.push({ type: 'COMMA', value: ',' })
+          // console.log(`Token: COMMA ',' at position ${this.position}`)
+          this.position++
+          continue
+        }
+
+        // 收集单词
+        let start = this.position
+        while (
+          this.position < this.input.length &&
+          !this.isWhitespace(this.input[this.position]) &&
+          !this.isDelimiter(this.input[this.position])
+        ) {
+          this.position++
+        }
+        let value = this.input.slice(start, this.position)
+        this.tokens.push({ type: 'WORD', value })
+        // console.log(`Token: WORD '${value}' from position ${start} to ${this.position}`)
+      }
+      // console.log('=== 词法分析完成 ===')
+      return this.tokens
+    }
+  }
+
+  // 语法分析器
+  class Parser {
+    constructor(tokens) {
+      this.tokens = tokens
+      this.position = 0
+
+      // 定义逻辑运算符及其元数
+      this.LOGICAL_OPERATORS = {
+        AND: 'n',
+        OR: 'n',
+        NOT: 1,
+      }
+
+      // 定义值运算符
+      this.VALUE_OPERATORS = [
+        'DOMAIN',
+        'DOMAIN-SUFFIX',
+        'DOMAIN-KEYWORD',
+        'DOMAIN-SET',
+        'DOMAIN-WILDCARD',
+        'IP-CIDR',
+        'IP-CIDR6',
+        'GEOIP',
+        'IP-ASN',
+        'RULE-SET',
+        'URL-REGEX',
+        'USER-AGENT',
+        'PROCESS-NAME',
+        'SUBNET',
+        'DEST-PORT',
+        'DST-PORT',
+        'IN-PORT',
+        'SRC-PORT',
+        'SRC-IP',
+        'PROTOCOL',
+        'NETWORK',
+        'SCRIPT',
+        'CELLULAR-RADIO',
+        'HOSTNAME-TYPE',
+        'DEVICE-NAME',
+        'DOMAIN-REGEX',
+        'GEOSITE',
+        'IP-SUFFIX',
+        'SRC-GEOIP',
+        'SRC-IP-ASN',
+        'SRC-IP-CIDR',
+        'SRC-IP-SUFFIX',
+        'IN-TYPE',
+        'IN-USER',
+        'IN-NAME',
+        'PROCESS-PATH',
+        'PROCESS-PATH-REGEX',
+        'PROCESS-NAME-REGEX',
+        'UID',
+        'DSCP',
+        'SUB-RULE',
+        'MATCH',
+      ]
+
+      // 路由策略
+      this.ROUTING_POLICIES = [
+        input.match(/,\s*([^,]+?)\s*(\s*,\s*(pre-matching|no-resolve|extended-matching)\s*)*?\s*$/)?.[1],
+      ]
+
+      // 规则匹配参数
+      this.MATCHING_PARAMETERS = [
+        { name: 'no-resolve', flag: 'noResolve' },
+        { name: 'extended-matching', flag: 'extendedMatching' },
+        { name: 'src', flag: 'src' },
+        { name: 'pre-matching', flag: 'preMatching' },
+      ]
+    }
+
+    peek(offset = 0) {
+      return this.tokens[this.position + offset]
+    }
+
+    consume() {
+      const token = this.tokens[this.position++]
+      // console.log(`Consume: ${token.type} '${token.value}' at position ${this.position - 1}`)
+      return token
+    }
+
+    expect(type, value = null) {
+      const token = this.consume()
+      if (!token || token.type !== type || (value !== null && token.value !== value)) {
+        throw new Error(
+          `期望 ${value !== null ? `'${value}'` : type}，但得到 '${token ? token.value : 'EOF'}'，在位置 ${
+            this.position
+          }`
+        )
+      }
+      return token
+    }
+
+    parse() {
+      // console.log('=== 开始语法分析 ===')
+      if (this.tokens.length === 0) {
+        throw new Error('输入为空')
+      }
+      const expr = this.parseExpression()
+
+      // 检查是否有剩余的路由策略
+      if (this.position < this.tokens.length) {
+        const remainingTokens = this.tokens.slice(this.position)
+        if (
+          remainingTokens.length >= 2 &&
+          remainingTokens[0].type === 'COMMA' &&
+          this.ROUTING_POLICIES.includes(remainingTokens[1].value.toUpperCase())
+        ) {
+          this.consume() // 消费逗号
+          const routingPolicyToken = this.consume()
+          expr.routingPolicy = routingPolicyToken.value.toUpperCase()
+        } else {
+          throw new Error(`意外的令牌 '${this.peek().value}' 在位置 ${this.position}`)
+        }
+      }
+
+      // console.log('=== 语法分析完成 ===')
+      return expr
+    }
+
+    parseExpression() {
+      const token = this.peek()
+      // console.log(`Parsing expression at position ${this.position}: ${token ? token.value : 'EOF'}`)
+
+      if (!token) {
+        throw new Error('意外的输入结束')
+      }
+
+      if (token.type === 'LPAREN') {
+        this.consume() // 消费 '('
+        const exprList = this.parseExpressionList()
+        this.expect('RPAREN') // 消费 ')'
+
+        // 如果表达式列表只有一个元素，返回该元素，否则返回列表
+        if (exprList.length === 1) {
+          return exprList[0]
+        } else {
+          return exprList
+        }
+      } else if (token.type === 'WORD') {
+        const operator = this.consume().value.toUpperCase()
+
+        // 检查是否是逻辑运算符
+        if (operator in this.LOGICAL_OPERATORS) {
+          const node = { operator, type: 'LOGICAL', children: [] }
+
+          // 消费逗号
+          this.expect('COMMA')
+
+          // 解析参数列表
+          while (true) {
+            const arg = this.parseExpression()
+            node.children.push(arg)
+
+            const nextToken = this.peek()
+            if (nextToken && nextToken.type === 'COMMA') {
+              // 前瞻检查逗号后是否为匹配参数或路由策略
+              if (
+                this.peek(1) &&
+                this.peek(1).type === 'WORD' &&
+                (this.ROUTING_POLICIES.includes(this.peek(1).value.toUpperCase()) ||
+                  this.isMatchingParameter(this.peek(1).value))
+              ) {
+                break
+              } else {
+                this.consume()
+              }
+            } else {
+              break
+            }
+          }
+
+          // 处理匹配参数或路由策略
+          while (this.peek() && this.peek().type === 'COMMA') {
+            this.consume()
+            const paramToken = this.consume()
+            const paramName = paramToken.value.toLowerCase()
+
+            if (this.ROUTING_POLICIES.includes(paramName.toUpperCase())) {
+              node.routingPolicy = paramName.toUpperCase()
+            } else if (this.isMatchingParameter(paramName)) {
+              const matchingParam = this.MATCHING_PARAMETERS.find(p => p.name === paramName)
+              node.flags = node.flags || {}
+              // 初始化 flags 对象
+              if (!node.flagsInitialized) {
+                this.MATCHING_PARAMETERS.forEach(param => {
+                  node.flags[param.flag] = false
+                })
+                node.flagsInitialized = true
+              }
+              // 设置对应的 flags 值为 true
+              node.flags[matchingParam.flag] = true
+            } else {
+              console.warn(`未知的规则匹配参数: ${paramName}`)
+            }
+          }
+
+          return node
+        }
+
+        // 检查是否是值运算符
+        if (this.VALUE_OPERATORS.includes(operator)) {
+          let value = null
+
+          // 初始化 flags 对象，默认包含所有匹配参数，值为 false
+          let flags = {}
+          this.MATCHING_PARAMETERS.forEach(param => {
+            flags[param.flag] = false
+          })
+
+          // 消费逗号
+          this.expect('COMMA')
+
+          value = this.collectValue()
+
+          while (this.peek() && this.peek().type === 'COMMA') {
+            // 前瞻检查逗号后是否为匹配参数或路由策略
+            if (
+              this.peek(1) &&
+              this.peek(1).type === 'WORD' &&
+              (this.ROUTING_POLICIES.includes(this.peek(1).value.toUpperCase()) ||
+                this.isMatchingParameter(this.peek(1).value))
+            ) {
+              this.consume()
+              const paramToken = this.consume()
+              const paramName = paramToken.value.toLowerCase()
+
+              if (this.ROUTING_POLICIES.includes(paramName.toUpperCase())) {
+                flags.routingPolicy = paramName.toUpperCase()
+              } else if (this.isMatchingParameter(paramName)) {
+                const matchingParam = this.MATCHING_PARAMETERS.find(p => p.name === paramName)
+                flags[matchingParam.flag] = true
+              } else {
+                console.warn(`未知的规则匹配参数: ${paramName}`)
+              }
+            } else {
+              break
+            }
+          }
+
+          const node = { operator, type: 'VALUE', value, flags }
+          // console.log(`Parsed value condition: ${JSON.stringify(node)}`)
+          return node
+        }
+
+        throw new Error(`未知的操作符 '${operator}' 在位置 ${this.position}`)
+      } else {
+        throw new Error(`意外的令牌 '${token.value}' 在位置 ${this.position}`)
+      }
+    }
+
+    parseExpressionList() {
+      const expressions = []
+
+      while (true) {
+        const expr = this.parseExpression()
+        expressions.push(expr)
+
+        if (this.peek() && this.peek().type === 'COMMA') {
+          this.consume()
+          if (this.peek() && this.peek().type === 'RPAREN') {
+            break
+          }
+        } else {
+          break
+        }
+      }
+
+      return expressions
+    }
+
+    isMatchingParameter(paramName) {
+      return this.MATCHING_PARAMETERS.some(p => p.name === paramName.toLowerCase())
+    }
+
+    collectValue() {
+      let value = ''
+      let depth = 0
+      // console.log(`Collecting value starting at position ${this.position}`)
+      while (this.position < this.tokens.length) {
+        const token = this.peek()
+        if (token.type === 'LPAREN') {
+          depth++
+          this.consume()
+          value += '('
+        } else if (token.type === 'RPAREN') {
+          if (depth === 0) {
+            break
+          }
+          depth--
+          this.consume()
+          value += ')'
+        } else if (token.type === 'COMMA' && depth === 0) {
+          break
+        } else {
+          value += token.value
+          this.consume()
+        }
+      }
+      // console.log(`Collected value: '${value}'`)
+      return value
+    }
+  }
+
+  function checkBalancedParentheses(input) {
+    let stack = []
+    for (let i = 0; i < input.length; i++) {
+      const char = input[i]
+      if (char === '(') {
+        stack.push(i)
+      } else if (char === ')') {
+        if (stack.length === 0) {
+          return { balanced: false, position: i }
+        }
+        stack.pop()
+      }
+    }
+    if (stack.length > 0) {
+      return { balanced: false, position: stack.pop() }
+    }
+    return { balanced: true }
+  }
+  // console.log('=== 开始解析规则 ===')
+  const balanceCheck = checkBalancedParentheses(input)
+  if (!balanceCheck.balanced) {
+    throw new Error(`括号不匹配，在位置 ${balanceCheck.position} 处发现错误。`)
+  }
+
+  try {
+    const tokenizer = new Tokenizer(input)
+    const tokens = tokenizer.tokenize()
+
+    const parser = new Parser(tokens)
+    const tree = parser.parse()
+    return tree
+  } catch (e) {
+    throw new Error(`解析错误: ${e.message}`)
+    return null
+  }
+}
+// 生成规则
+function generateRule(node, platform, flags = {}) {
+  // 平台特性配置（保持不变）
+  const platformFeatures = {
+    mihomo: {
+      supportsExtendedMatching: true,
+      supportsNoResolve: true,
+      supportsPreMatching: true,
+      supportsSrc: true,
+      rejectPolicyRegex: /^REJECT(-[A-Z]+)*$/,
+    },
+    surge: {
+      supportsExtendedMatching: false,
+      supportsNoResolve: true,
+      supportsPreMatching: true,
+      supportsSrc: false,
+      rejectPolicyRegex: /^REJECT(-[A-Z]+)*$/,
+    },
+    loon: {
+      supportsExtendedMatching: false,
+      supportsNoResolve: false,
+      supportsPreMatching: false,
+      supportsSrc: false,
+      rejectPolicyRegex: /^REJECT(-[A-Z]+)*$/,
+    },
+  }
+
+  const FLAG_SUPPORTED_TYPES = {
+    extendedMatching: ['RULE-SET', 'DOMAIN-SET', 'DOMAIN-KEYWORD', 'DOMAIN-SUFFIX', 'DOMAIN', 'URL-REGEX'],
+    noResolve: ['IP-CIDR', 'IP-CIDR6', 'GEOIP', 'IP-ASN', 'RULE-SET'],
+    src: ['IP-CIDR', 'IP-CIDR6', 'GEOIP', 'IP-ASN', 'IP-SUFFIX'],
+    preMatching: [
+      'DOMAIN',
+      'DOMAIN-SUFFIX',
+      'DOMAIN-KEYWORD',
+      'DOMAIN-SET',
+      'DOMAIN-WILDCARD',
+      'IP-CIDR',
+      'IP-CIDR6',
+      'GEOIP',
+      'IP-ASN',
+      'SUBNET',
+      'DEST-PORT',
+      'SRC-PORT',
+      'SRC-IP',
+      'RULE-SET',
+
+      'AND',
+      'OR',
+      'NOT',
+    ],
+  }
+
+  const LOGICAL_OPERATORS_ARITY = {
+    AND: 'n',
+    OR: 'n',
+    NOT: 1,
+  }
+
+  const LOGICAL_OPERATORS_PRECEDENCE = {
+    NOT: 3,
+    AND: 2,
+    OR: 1,
+  }
+  let hasPreMatching
+  function traverseTree(node, platform, parentOperator = null) {
+    node.flags = { ...node.flags, ...flags }
+    const features = platformFeatures[platform]
+    if (!features) {
+      throw new Error(`未知的平台：${platform}`)
+    }
+
+    if (!node || !node.type) {
+      console.log('节点缺少 type 属性或节点为 null:', node)
+      return ''
+    }
+
+    if (node.type === 'LOGICAL') {
+      const operator = node.operator
+      const arity = LOGICAL_OPERATORS_ARITY[operator]
+
+      // 检查是否有 pre-matching 标志
+      // const hasPreMatching = node.flags && node.flags.preMatching;
+      if (node.routingPolicy) {
+        hasPreMatching = node.flags && node.flags.preMatching
+      }
+      if (hasPreMatching && node.routingPolicy) {
+        // 验证 routingPolicy 是否符合 ^REJECT(-[A-Z]+)*$ 的格式
+        if (!features.rejectPolicyRegex.test(node.routingPolicy)) {
+          console.log(`pre-matching 只能与 REJECT 系列策略一起使用，当前策略为：${node.routingPolicy}`)
+          hasPreMatching = false
+        }
+      }
+
+      if (hasPreMatching) {
+        // 检查所有子规则是否属于支持 pre-matching 的类型
+        const notSupportedTypes = []
+        const allChildrenSupported = node.children.every(childArray => {
+          return Array.isArray(childArray)
+            ? childArray.every(child => {
+                const isSupported = FLAG_SUPPORTED_TYPES.preMatching.includes(child.operator)
+                if (!isSupported) {
+                  notSupportedTypes.push(child.operator)
+                }
+                return isSupported
+              })
+            : true
+        })
+
+        if (!allChildrenSupported) {
+          console.log(
+            `逻辑运算符 ${operator} 中的所有子规则必须是支持 pre-matching 的类型, 但 ${notSupportedTypes.join(
+              ', '
+            )} 不支持`
+          )
+          hasPreMatching = false
+        }
+      }
+
+      let childrenOutputs = []
+      node.children.forEach(child => {
+        flattenChildren(child).forEach(subChild => {
+          const output = traverseTree(subChild, platform, operator)
+          if (output !== '') {
+            childrenOutputs.push(output)
+          }
+        })
+      })
+
+      let result = ''
+      let modifiers = []
+
+      if (arity === 1) {
+        if (childrenOutputs.length !== 1) {
+          throw new Error(`操作符 ${operator} 期望有 1 个子节点，但得到 ${childrenOutputs.length} 个`)
+        }
+        // 仅允许添加 pre-matching 标志
+        if (node.flags) {
+          const { extendedMatching, noResolve, preMatching, src } = node.flags
+          if (extendedMatching || noResolve || src) {
+            console.log(`操作符 ${operator} 不能添加 extended-matching、no-resolve 或 src 标志`)
+          }
+        }
+        result = `${operator},(${childrenOutputs[0]})`
+      } else if (arity === 'n') {
+        const formattedChildren = childrenOutputs.map(output => {
+          return needsParentheses({ operator: output.split(',')[0] }, operator) ? `(${output})` : output
+        })
+        result = `${operator},(${formattedChildren.join(',')})`
+      } else {
+        throw new Error(`未知的运算符元数：${arity}，操作符：${operator}`)
+      }
+
+      if (node.routingPolicy) {
+        result += `,${node.routingPolicy}`
+        if (hasPreMatching) {
+          result += `,pre-matching`
+        }
+      }
+
+      if (needsParentheses(node, parentOperator)) {
+        result = `(${result})`
+      }
+
+      // console.log(`Processed LOGICAL node: ${node.operator}, result: ${result}`)
+
+      return result
+    } else if (node.type === 'VALUE') {
+      if (['URL-REGEX', 'USER-AGENT'].includes(node.operator) && !/^['"].*['"]$/.test(node.value)) {
+        node.value = `"${node.value}"`
+      }
+      let result = `${node.operator},${node.value}`
+
+      if (node.flags) {
+        let flagStrings = []
+
+        for (const [flag, isSet] of Object.entries(node.flags)) {
+          if (isSet) {
+            const supportedTypes = FLAG_SUPPORTED_TYPES[flag]
+            if (!supportedTypes.includes(node.operator)) {
+              console.log(`标志 ${flag} 不支持应用于规则类型 ${node.operator}`)
+            } else {
+              // 添加标志到 flagStrings
+              switch (flag) {
+                case 'extendedMatching':
+                  flagStrings.push('extended-matching')
+                  break
+                case 'noResolve':
+                  flagStrings.push('no-resolve')
+                  break
+                case 'preMatching':
+                  // flagStrings.push('pre-matching')
+                  break
+                case 'src':
+                  flagStrings.push('src')
+                  break
+                default:
+                  console.log(`未知的标志类型：${flag}`)
+              }
+            }
+          }
+        }
+
+        if (flagStrings.length > 0) {
+          result += `,${flagStrings.join(',')}`
+        }
+      }
+
+      // 根据标志类型决定是否包裹括号
+      // ⚠️ extended-matching、no-resolve 不能附加到逻辑运算符上，但可以附加到规则类型上
+      // pre-matching 可以附加到逻辑运算符上，已在 LOGICAL 节点处理
+      result = `(${result})`
+
+      // console.log(`Processed VALUE node: ${node.operator}, result: ${result}`)
+
+      return result
+    } else {
+      console.log(`未知的节点类型: ${node.type}`)
+      return ''
+    }
+  }
+
+  function needsParentheses(node, parentOperator) {
+    if (!parentOperator) {
+      return false
+    }
+
+    const currentPrecedence = LOGICAL_OPERATORS_PRECEDENCE[node.operator]
+    const parentPrecedence = LOGICAL_OPERATORS_PRECEDENCE[parentOperator]
+
+    if (currentPrecedence === undefined) {
+      return false
+    }
+
+    if (currentPrecedence <= parentPrecedence) {
+      return true
+    }
+    if (node.operator === 'NOT') {
+      return true
+    }
+    return false
+  }
+
+  function flattenChildren(children) {
+    const result = []
+    if (Array.isArray(children)) {
+      children.forEach(child => {
+        result.push(...flattenChildren(child))
+      })
+    } else if (children) {
+      result.push(children)
+    }
+    return result
+  }
+  return traverseTree(node, platform)
+}
+
+function modifyRule(input, platform, flags) {
+  try {
+    const tree = parseRule(input)
+    if (tree) {
+      return generateRule(tree, platform, flags)
+    }
+  } catch (e) {
+    console.log(e)
+    shNotify(`修改规则发生错误 ${e.message} 请查看日志`)
+  }
+}
+
+// Surge 现在支持使用 ' 或 " 来包裹字段。当使用 ' 时，" 为合法字符，反之亦然
+
+// Loon JQ 表达式 单引号包裹
+// 1. 必须用单引号包裹
+// 2. 无脑用单引号把 jq 表达式取出来, 里面是啥就是啥
+
+// Loon json-replace 处理对象时是跟 json-add 一样的，处理数组时不一样(3K 会改)
+// 123 是 "123"
+// "123" 是 "\"123\""
+// a 是 "a"
+// "a" 是 "\"a\""
+function parseLoonKey(v) {
+  return v.replace(/\\x20/g, ' ')
+}
+// 123 是 123
+// "123" 是 "123"
+// a 是 "a"
+// "a" 是 "a"
+// 由于在解析配置是用空格分割各个参数，如果配置的参数中有空格，请使用\x20代替
+function parseLoonValue(_v) {
+  let v = _v.replace(/\\x20/g, ' ')
+  if (/^".*"$/.test(v)) {
+    // 双引号包裹的肯定是字符串
+    v = v.replace(/^"(.*?)"$/, '$1')
+  } else {
+    try {
+      v = JSON.parse(v)
+    } catch (e) {
+      console.log(`解析 Loon 值 ${v} 失败: ${e}`)
+    }
+  }
+  return v
 }
 function done(...args) {
   $.log(`⏱ 总耗时：${Math.round(((Date.now() - script_start) / 1000) * 100) / 100} 秒`)
